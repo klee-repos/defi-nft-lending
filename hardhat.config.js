@@ -17,11 +17,7 @@ const {
 
 module.exports = {
   solidity: {
-    compilers: [
-      { version: "0.8.10" },
-      { version: "0.8.0" },
-      { version: "0.7.0" },
-    ],
+    compilers: [{ version: "0.8.7" }, { version: "0.7.0" }],
   },
   defaultNetwork: "ganache",
   networks: {

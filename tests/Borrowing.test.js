@@ -8,10 +8,12 @@ const ERC721_NAME = "KVN NFTs";
 const ERC721_SYMBOL = "KVN";
 const ERC721_BASE_URI = "https://www.ipfs.com/";
 const ERC721_MINT_PRICE = ethers.utils.parseEther("0.01");
-const ERC721_MAX_SUPPLY = 3;
+const ERC721_MAX_SUPPLY = 2;
 
 const PRICE_FEED_DECIMALS = 8;
 const PRICE_FEED_INITIAL_PRICE = "100000000000";
+
+const NFT_PROJECT_ETH_FLOOR = ethers.utils.parseEther(".75");
 
 function log(v) {
   console.log(v);
@@ -89,7 +91,8 @@ describe("DeFi NFTLending unit tests", function () {
   });
 
   //NFTLending tests
-  let NFTLendingFactory, NFTLending, ApprovedTokenId;
+  let NFTLendingFactory, NFTLending;
+  let ApprovedTokenIds = [];
 
   describe("deploy NFTLending", function () {
     it("deploy contract", async () => {
@@ -101,49 +104,80 @@ describe("DeFi NFTLending unit tests", function () {
     });
   });
 
-  describe("transfer nft to NFTLending", function () {
-    it("approve transfer", async () => {
-      ApprovedTokenId = await SimpleNFT.tokenOfOwnerByIndex(WALLET_ADDRESS, 0);
-      let tx = await SimpleNFT.approve(NFTLending.address, ApprovedTokenId);
+  describe("allow nft project", function () {
+    it("approve project", async () => {
+      let tx = await NFTLending.approveNFT(SimpleNFT.address);
+      let txReceipt = await tx.wait();
+      assert(txReceipt.events[0].event === "ProjectApproved");
+    });
+  });
+
+  describe("set nft floor", function () {
+    it("set nft floor eth value", async () => {
+      let tx = await NFTLending.setNFTFloorEthValue(
+        SimpleNFT.address,
+        NFT_PROJECT_ETH_FLOOR
+      );
       let txReceipt = await tx.wait();
       assert(
-        txReceipt.events[0].event === "Approval",
-        "approval of nft failed"
+        txReceipt.events[0].event === "NewFloor",
+        "setting new floor failed"
       );
+    });
+
+    it("check nft floor usd value", async () => {
+      let nftFloorUSD = await NFTLending.getNFTFloorUSDValue(SimpleNFT.address);
+      let expectedFloorUSD = await NFTLending.ethToUSD(NFT_PROJECT_ETH_FLOOR);
+      assert(
+        nftFloorUSD.toString() === expectedFloorUSD.toString(),
+        "unexpected floor eth value"
+      );
+    });
+  });
+
+  describe("transfer some nfts to NFTLending", function () {
+    it("approve transfers", async () => {
+      for (let i = 0; i < ERC721_MAX_SUPPLY; i++) {
+        ApprovedTokenIds.push(
+          await SimpleNFT.tokenOfOwnerByIndex(WALLET_ADDRESS, i)
+        );
+      }
+      for (let a in ApprovedTokenIds) {
+        let tx = await SimpleNFT.approve(
+          NFTLending.address,
+          ApprovedTokenIds[a]
+        );
+        let txReceipt = await tx.wait();
+        assert(
+          txReceipt.events[0].event === "Approval",
+          "approval of nft failed"
+        );
+      }
     });
 
     it("send nft to NFTLending", async () => {
-      let tx = await NFTLending.depositNFT(SimpleNFT.address, ApprovedTokenId);
-      let txReceipt = await tx.wait();
-      assert(txReceipt.events[2].event === "Deposit", "nft deposit failed");
+      for (let a in ApprovedTokenIds) {
+        let tx = await NFTLending.depositNFT(
+          SimpleNFT.address,
+          ApprovedTokenIds[a]
+        );
+        let txReceipt = await tx.wait();
+        assert(txReceipt.events[2].event === "Deposit", "nft deposit failed");
+      }
     });
 
     it("confirm new owner", async () => {
-      let tx = await SimpleNFT.ownerOf(ApprovedTokenId);
-      assert(tx === NFTLending.address, "wrong owner");
+      for (let a in ApprovedTokenIds) {
+        let tx = await SimpleNFT.ownerOf(ApprovedTokenIds[a]);
+        assert(tx === NFTLending.address, "wrong owner");
+      }
     });
   });
 
-  describe("withdraw nft from NFTLending", function () {
-    it("withdraw nft from NFTLending", async () => {
-      let tx = await NFTLending.withdrawNFT(SimpleNFT.address, ApprovedTokenId);
-      let txReceipt = await tx.wait();
-      assert(txReceipt.events[2].event === "Withdraw", "nft withdraw failed");
-    });
-
-    it("confirm new owner", async () => {
-      let tx = await SimpleNFT.ownerOf(ApprovedTokenId);
-      assert(tx === WALLET_ADDRESS, "wrong owner");
-    });
-  });
-
-  describe("check price feed", function () {
-    it("get eth price", async () => {
-      let tx = await NFTLending.ethToUSD(ethers.utils.parseEther("1"));
-      assert(
-        tx.toString() === PRICE_FEED_INITIAL_PRICE,
-        "unexpected usd value after conversion"
-      );
+  describe("account info", function () {
+    it("get collateral value", async () => {
+      let tx = await NFTLending.accountCollateral(WALLET_ADDRESS);
+      log(tx);
     });
   });
 });
