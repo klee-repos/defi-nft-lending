@@ -16,6 +16,11 @@ error MustBeGreaterThanZero(uint256 amount);
 error InsufficientFunds(address account, uint256 amount);
 error NegativeTreasury(address account, uint256 amount);
 error NFTNowAllowed(address nft);
+error InsufficientCollateral(
+    address account,
+    uint256 amount,
+    uint256 maxBorrow
+);
 
 contract NFTLending is ReentrancyGuard, Ownable {
     // eth to usd functions
@@ -30,15 +35,16 @@ contract NFTLending is ReentrancyGuard, Ownable {
     // user address -> eth deposit
     mapping(address => uint256) public s_accountsToEthDeposit;
 
+    // user address -> eth borrow
+    mapping(address => uint256) public s_accountsToEthBorrow;
+    // borrowing
+    uint256 public s_borrowPower = 30;
+
     // nft address -> floor eth value
     mapping(address => uint256) public s_nftFloorEthValue;
 
     // treasury
     uint256 public s_treasuryEth;
-
-    // borrowing
-    uint256 public s_borrowPower = 30;
-    // user address -> eth borrow amount
 
     // events
     event Deposit(address indexed account, uint256 indexed tokenId);
@@ -47,6 +53,7 @@ contract NFTLending is ReentrancyGuard, Ownable {
     event WithdrawEth(address indexed account, uint256 indexed amount);
     event ProjectApproved(address indexed account);
     event NewFloor(address indexed nft, uint256 indexed amount);
+    event BorrowEth(address indexed account, uint256 indexed amount);
 
     // price feed
     AggregatorV3Interface public priceFeed;
@@ -120,12 +127,30 @@ contract NFTLending is ReentrancyGuard, Ownable {
 
     function healthScore(address account) public view returns (uint256) {}
 
+    function borrowMaxUSD(address user) public view returns (uint256) {
+        uint256 userCollateral = accountCollateral(user);
+        uint256 maxUSD = (userCollateral * s_borrowPower) / 100;
+        return maxUSD;
+    }
+
     function borrowEth(uint256 amount)
         external
         payable
         nonReentrant
         moreThanZero(amount)
-    {}
+    {
+        if (amount > s_treasuryEth) revert NegativeTreasury(msg.sender, amount);
+        uint256 maxBorrow = borrowMaxUSD(msg.sender);
+        s_accountsToEthBorrow[msg.sender] += amount;
+        uint256 borrowedInUSD = s_accountsToEthBorrow[msg.sender].convertToUSD(
+            priceFeed
+        );
+        if (borrowedInUSD > maxBorrow)
+            revert InsufficientCollateral(msg.sender, borrowedInUSD, maxBorrow);
+        s_treasuryEth -= amount;
+        payable(msg.sender).transfer(amount);
+        emit BorrowEth(msg.sender, amount);
+    }
 
     function withdrawNFT(address nft, uint256 tokenId)
         external
@@ -152,7 +177,7 @@ contract NFTLending is ReentrancyGuard, Ownable {
         if (newOwner != msg.sender) revert WithdrawFailed(nft, tokenId);
     }
 
-    function depositEth()
+    function depositETH()
         external
         payable
         moreThanZero(msg.value)

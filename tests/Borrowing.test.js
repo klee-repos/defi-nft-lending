@@ -1,5 +1,6 @@
 const { ethers } = require("hardhat");
 const { assert } = require("chai");
+const { parse } = require("dotenv");
 require("dotenv").config;
 
 const { WALLET_ADDRESS } = process.env;
@@ -13,7 +14,11 @@ const ERC721_MAX_SUPPLY = 2;
 const PRICE_FEED_DECIMALS = 8;
 const PRICE_FEED_INITIAL_PRICE = "100000000000";
 
-const NFT_PROJECT_ETH_FLOOR = ethers.utils.parseEther(".75");
+const NFT_PROJECT_ETH_FLOOR = ethers.utils.parseEther(".5");
+
+const BORROW_POWER = 30;
+const BORROW_AMOUNT_ETH = ethers.utils.parseEther(".05");
+const DEPOSIT_AMOUNT_ETH = ethers.utils.parseEther("0.1");
 
 function log(v) {
   console.log(v);
@@ -91,7 +96,7 @@ describe("DeFi NFTLending unit tests", function () {
   });
 
   //NFTLending tests
-  let NFTLendingFactory, NFTLending;
+  let NFTLendingFactory, NFTLending, AccountCollateral, TreasuryBalance;
   let ApprovedTokenIds = [];
 
   describe("deploy NFTLending", function () {
@@ -175,9 +180,52 @@ describe("DeFi NFTLending unit tests", function () {
   });
 
   describe("account info", function () {
-    it("get collateral value", async () => {
-      let tx = await NFTLending.accountCollateral(WALLET_ADDRESS);
-      log(tx);
+    it("check collateral value", async () => {
+      let usdFloor = await NFTLending.getNFTFloorUSDValue(SimpleNFT.address);
+      let totalValue =
+        usdFloor * ethers.BigNumber.from(ERC721_MAX_SUPPLY.toString());
+      AccountCollateral = await NFTLending.accountCollateral(WALLET_ADDRESS);
+      assert(
+        totalValue.toString() === AccountCollateral.toString(),
+        "unexpected collateral value"
+      );
+    });
+
+    it("check max borrow amount", async () => {
+      let borrowMax = await NFTLending.borrowMaxUSD(WALLET_ADDRESS);
+      let expected = (AccountCollateral * BORROW_POWER) / 100;
+      assert(
+        borrowMax.toString() === expected.toString(),
+        "unexpected max borrow amount"
+      );
+    });
+  });
+
+  describe("deposit some eth into treasury", function () {
+    it("deposit eth", async () => {
+      let tx = await NFTLending.depositETH({
+        value: DEPOSIT_AMOUNT_ETH,
+      });
+      await tx.wait();
+      TreasuryBalance = await NFTLending.s_treasuryEth();
+      assert(
+        TreasuryBalance.toString() === DEPOSIT_AMOUNT_ETH.toString(),
+        "deposit amount incorrect"
+      );
+    });
+  });
+
+  describe("borrow some eth", function () {
+    it("borrow", async () => {
+      let tx = await NFTLending.borrowEth(BORROW_AMOUNT_ETH);
+      let txReceipt = await tx.wait();
+      assert(txReceipt.events[0].event === "BorrowEth", "borrowing eth failed");
+      TreasuryBalance -= BORROW_AMOUNT_ETH;
+      let treasury = await NFTLending.s_treasuryEth();
+      assert(
+        treasury.toString() === TreasuryBalance.toString(),
+        "treasury balance incorrect"
+      );
     });
   });
 });
