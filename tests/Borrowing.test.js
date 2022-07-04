@@ -1,6 +1,5 @@
 const { ethers } = require("hardhat");
-const { assert } = require("chai");
-const { parse } = require("dotenv");
+const { assert, expect } = require("chai");
 require("dotenv").config;
 
 const { WALLET_ADDRESS } = process.env;
@@ -14,11 +13,12 @@ const ERC721_MAX_SUPPLY = 2;
 const PRICE_FEED_DECIMALS = 8;
 const PRICE_FEED_INITIAL_PRICE = "100000000000";
 
-const NFT_PROJECT_ETH_FLOOR = ethers.utils.parseEther(".5");
+const NFT_PROJECT_ETH_FLOOR = ethers.utils.parseEther(".45");
 
 const BORROW_POWER = 30;
-const BORROW_AMOUNT_ETH = ethers.utils.parseEther(".05");
-const DEPOSIT_AMOUNT_ETH = ethers.utils.parseEther("0.1");
+const BORROW_AMOUNT_ETH = ethers.utils.parseEther(".25");
+const DEPOSIT_AMOUNT_ETH = ethers.utils.parseEther("0.3");
+const PAY_BACK_ETH = ethers.utils.parseEther("0.1");
 
 function log(v) {
   console.log(v);
@@ -226,6 +226,38 @@ describe("DeFi NFTLending unit tests", function () {
         treasury.toString() === TreasuryBalance.toString(),
         "treasury balance incorrect"
       );
+    });
+
+    it("check health score", async () => {
+      let healthScore = await NFTLending.healthScore(WALLET_ADDRESS);
+      let maxBorrowUSD = await NFTLending.borrowMaxUSD(WALLET_ADDRESS);
+      let borrowedETH = await NFTLending.s_accountsToEthBorrow(WALLET_ADDRESS);
+      let borrowedUSD = await NFTLending.ethToUSD(borrowedETH);
+      let expectedScore = (maxBorrowUSD / borrowedUSD) * 100;
+      assert(
+        healthScore.toString() === expectedScore.toString(),
+        "unexpected health score"
+      );
+    });
+
+    it("pay back some of loan", async () => {
+      let tx = await NFTLending.payBackETH({ value: PAY_BACK_ETH });
+      let txReceipt = await tx.wait();
+      assert(
+        txReceipt.events[0].event === "LoanRepayment",
+        "loan repayment failed"
+      );
+    });
+  });
+
+  describe("try to withdraw nft", function () {
+    it("withdraw nft from NFTLending", async () => {
+      let tx = await NFTLending.withdrawNFT(
+        SimpleNFT.address,
+        ApprovedTokenIds[0]
+      );
+      let txReceipt = await tx.wait();
+      log(txReceipt.events);
     });
   });
 });
