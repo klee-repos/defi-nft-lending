@@ -1,7 +1,7 @@
 const { ethers } = require("hardhat");
 require("dotenv").config;
 
-const { RPC_SERVER, RECEIVER_ADDRESS } = process.env;
+const { RPC_SERVER, RECEIVER_ADDRESS, SUPPLY_PRIVATE_KEY } = process.env;
 const ETH_TO_SEND = "20";
 
 const main = async () => {

@@ -22,7 +22,7 @@ contract NFTLending is ReentrancyGuard, Ownable {
     // eth to usd functions
     using PriceConversion for uint256;
 
-    // user address -> erc721 address -> deposit amount
+    // user address -> erc721 address -> array of token ids
     mapping(address => mapping(address => uint256[]))
         public s_accountsToNFTDeposits;
     // allowed projects
@@ -34,7 +34,23 @@ contract NFTLending is ReentrancyGuard, Ownable {
 
     // user address -> eth borrow
     mapping(address => uint256) public s_accountsToEthBorrow;
+
+    // user address -> loan ids
+    mapping(address => uint256[]) public s_accountsToLoanIds;
+    // user address -> total loans
+    mapping(address => uint256) public s_accountsToTotalLoans;
+
+    // user address -> loan id -> deadline
+    mapping(address => mapping(uint256 => uint256))
+        public s_accountsToLoanIdToLoanDeadline;
+
+    // user address -> loan id -> eth borrow
+    mapping(address => mapping(uint256 => uint256))
+        public s_accountsToLoanIdToEthBorrow;
+    uint256 public s_loanId = 0;
+
     // borrowing
+    uint256 public s_borrowInterestRate = 10;
     uint256 public s_borrowPower = 30;
     uint8 public immutable i_LIQUIDATION_THRESHOLD = 100;
     // represent delete
@@ -89,8 +105,55 @@ contract NFTLending is ReentrancyGuard, Ownable {
         return usdFloorValue;
     }
 
-    function ethToUSD(uint256 amount) public view returns (uint256) {
+    function ethToUSD(uint256 amount)
+        public
+        view
+        moreThanZero(amount)
+        returns (uint256)
+    {
         return amount.convertToUSD(priceFeed);
+    }
+
+    function accountBorrowed(address user) public view returns (uint256) {
+        return s_accountsToEthBorrow[user];
+    }
+
+    function depositNFT(address nft, uint256 tokenId)
+        external
+        isAllowedNFT(nft)
+        nonReentrant
+    {
+        s_accountsToNFTDeposits[msg.sender][nft].push(tokenId);
+        ERC721(nft).transferFrom(msg.sender, address(this), tokenId);
+        emit Deposit(msg.sender, tokenId);
+
+        address newOwner = ERC721(nft).ownerOf(tokenId);
+        if (newOwner != address(this)) revert DepositFailed(nft, tokenId);
+    }
+
+    function borrowMaxUSD(address user) public view returns (uint256) {
+        uint256 userCollateral = accountCollateral(user);
+        uint256 maxUSD;
+        if (userCollateral == 0) {
+            maxUSD = 0;
+        } else {
+            maxUSD = (userCollateral * s_borrowPower) / 100;
+        }
+        return maxUSD;
+    }
+
+    function healthScore(address account) public view returns (uint256) {
+        uint256 maxBorrow = borrowMaxUSD(account);
+        uint256 currentBorrowed = s_accountsToEthBorrow[account].convertToUSD(
+            priceFeed
+        );
+        uint256 score;
+        if (currentBorrowed > 0) {
+            score = (maxBorrow * 100) / currentBorrowed;
+        } else {
+            score = i_LIQUIDATION_THRESHOLD;
+        }
+        return score;
     }
 
     function accountCollateral(address user) public view returns (uint256) {
@@ -122,62 +185,49 @@ contract NFTLending is ReentrancyGuard, Ownable {
         return totalCollateral;
     }
 
-    function accountBorrowed(address user) public view returns (uint256) {
-        return s_accountsToEthBorrow[user];
-    }
-
-    function depositNFT(address nft, uint256 tokenId)
-        external
-        isAllowedNFT(nft)
-        nonReentrant
-    {
-        s_accountsToNFTDeposits[msg.sender][nft].push(tokenId);
-        ERC721(nft).transferFrom(msg.sender, address(this), tokenId);
-        emit Deposit(msg.sender, tokenId);
-
-        address newOwner = ERC721(nft).ownerOf(tokenId);
-        if (newOwner != address(this)) revert DepositFailed(nft, tokenId);
-    }
-
-    function healthScore(address account) public view returns (uint256) {
-        uint256 maxBorrow = borrowMaxUSD(account);
-        uint256 currentBorrowed = s_accountsToEthBorrow[account].convertToUSD(
-            priceFeed
-        );
-        uint256 score;
-        if (currentBorrowed > 0) {
-            score = (maxBorrow * 100) / currentBorrowed;
-        } else {
-            score = i_LIQUIDATION_THRESHOLD;
-        }
-        return score;
-    }
-
-    function borrowMaxUSD(address user) public view returns (uint256) {
-        uint256 userCollateral = accountCollateral(user);
-        uint256 maxUSD;
-        if (userCollateral == 0) {
-            maxUSD = 0;
-        } else {
-            maxUSD = (userCollateral * s_borrowPower) / 100;
-        }
-        return maxUSD;
-    }
-
-    function borrowEth(uint256 amount)
+    function borrowEth(uint256 amount, uint256 duration)
         external
         payable
         nonReentrant
         moreThanZero(amount)
+        moreThanZero(duration)
     {
-        if (amount > s_treasuryEth) revert NegativeTreasury(msg.sender, amount);
-        s_accountsToEthBorrow[msg.sender] += amount;
+        uint256 interest = (amount * s_borrowInterestRate) / 100;
+        uint256 amountWithInterest = amount + interest;
+        if (amountWithInterest > s_treasuryEth)
+            revert NegativeTreasury(msg.sender, amountWithInterest);
+        // add amount to total borrowed
+        s_accountsToEthBorrow[msg.sender] += amountWithInterest;
+        // add amount to a loan id
+        s_accountsToLoanIdToEthBorrow[msg.sender][
+            s_loanId
+        ] = amountWithInterest;
+        // add deadline to the loan id
+        s_accountsToLoanIdToLoanDeadline[msg.sender][
+            s_loanId
+        ] = calculateLoanDeadline(duration);
+        // associate loan id to the user
+        s_accountsToLoanIds[msg.sender].push(s_loanId);
+        s_accountsToTotalLoans[msg.sender]++;
+        s_loanId++;
+        // ensure health score is green after loan
         uint256 userScore = healthScore(msg.sender);
         if (userScore < i_LIQUIDATION_THRESHOLD)
             revert InsufficientCollateral(msg.sender);
-        s_treasuryEth -= amount;
-        payable(msg.sender).transfer(amount);
-        emit BorrowEth(msg.sender, amount);
+        // deduct loan amount from treasury
+        s_treasuryEth -= amountWithInterest;
+        // send eth loan to user
+        payable(msg.sender).transfer(amountWithInterest);
+        emit BorrowEth(msg.sender, amountWithInterest);
+    }
+
+    function calculateLoanDeadline(uint256 duration)
+        public
+        view
+        moreThanZero(duration)
+        returns (uint256 deadline)
+    {
+        deadline = block.timestamp + (duration * 1 seconds);
     }
 
     function withdrawNFT(address nft, uint256 tokenId)
@@ -219,13 +269,14 @@ contract NFTLending is ReentrancyGuard, Ownable {
         if (newOwner != msg.sender) revert WithdrawFailed(nft, tokenId);
     }
 
-    function payBackETH()
+    function payBackETH(uint256 loanId)
         external
         payable
         moreThanZero(msg.value)
         nonReentrant
     {
         s_accountsToEthBorrow[msg.sender] -= msg.value;
+        s_accountsToLoanIdToEthBorrow[msg.sender][loanId] -= msg.value;
         s_treasuryEth += msg.value;
         emit LoanRepayment(msg.sender, msg.value);
     }

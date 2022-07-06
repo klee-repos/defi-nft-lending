@@ -16,9 +16,11 @@ const PRICE_FEED_INITIAL_PRICE = "100000000000";
 const NFT_PROJECT_ETH_FLOOR = ethers.utils.parseEther(".45");
 
 const BORROW_POWER = 30;
-const BORROW_AMOUNT_ETH = ethers.utils.parseEther(".25");
+const BORROW_INTEREST_RATE = 10;
+const BORROW_AMOUNT_ETH = ethers.utils.parseEther(".15");
 const DEPOSIT_AMOUNT_ETH = ethers.utils.parseEther("0.3");
 const PAY_BACK_ETH = ethers.utils.parseEther("0.1");
+const LOAN_DURATION = 30;
 
 function log(v) {
   console.log(v);
@@ -217,13 +219,14 @@ describe("DeFi NFTLending unit tests", function () {
 
   describe("borrow some eth", function () {
     it("borrow", async () => {
-      let tx = await NFTLending.borrowEth(BORROW_AMOUNT_ETH);
+      let tx = await NFTLending.borrowEth(BORROW_AMOUNT_ETH, LOAN_DURATION);
       let txReceipt = await tx.wait();
       assert(txReceipt.events[0].event === "BorrowEth", "borrowing eth failed");
-      TreasuryBalance -= BORROW_AMOUNT_ETH;
-      let treasury = await NFTLending.s_treasuryEth();
+      let interest = (BORROW_AMOUNT_ETH * BORROW_INTEREST_RATE) / 100;
+      TreasuryBalance = await NFTLending.s_treasuryEth();
+      let expectedTreasury = BORROW_AMOUNT_ETH - interest;
       assert(
-        treasury.toString() === TreasuryBalance.toString(),
+        expectedTreasury.toString() === TreasuryBalance.toString(),
         "treasury balance incorrect"
       );
     });
@@ -233,7 +236,7 @@ describe("DeFi NFTLending unit tests", function () {
       let maxBorrowUSD = await NFTLending.borrowMaxUSD(WALLET_ADDRESS);
       let borrowedETH = await NFTLending.s_accountsToEthBorrow(WALLET_ADDRESS);
       let borrowedUSD = await NFTLending.ethToUSD(borrowedETH);
-      let expectedScore = (maxBorrowUSD / borrowedUSD) * 100;
+      let expectedScore = parseInt((maxBorrowUSD * 100) / borrowedUSD);
       assert(
         healthScore.toString() === expectedScore.toString(),
         "unexpected health score"
@@ -241,7 +244,12 @@ describe("DeFi NFTLending unit tests", function () {
     });
 
     it("pay back some of loan", async () => {
-      let tx = await NFTLending.payBackETH({ value: PAY_BACK_ETH });
+      let totalLoans = await NFTLending.s_accountsToTotalLoans(WALLET_ADDRESS);
+      let loanIds = [];
+      for (let l = 0; l < totalLoans; l++) {
+        loanIds.push(await NFTLending.s_accountsToLoanIds(WALLET_ADDRESS, l));
+      }
+      let tx = await NFTLending.payBackETH(loanIds[0], { value: PAY_BACK_ETH });
       let txReceipt = await tx.wait();
       assert(
         txReceipt.events[0].event === "LoanRepayment",
@@ -257,7 +265,6 @@ describe("DeFi NFTLending unit tests", function () {
         ApprovedTokenIds[0]
       );
       let txReceipt = await tx.wait();
-      log(txReceipt.events);
     });
   });
 });
