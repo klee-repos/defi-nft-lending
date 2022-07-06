@@ -17,6 +17,7 @@ error InsufficientFunds(address account, uint256 amount);
 error NegativeTreasury(address account, uint256 amount);
 error NFTNowAllowed(address nft);
 error InsufficientCollateral(address account);
+error AmountMoreThanBorrowed(uint256 loan, uint256 amount);
 
 contract NFTLending is ReentrancyGuard, Ownable {
     // eth to usd functions
@@ -25,6 +26,9 @@ contract NFTLending is ReentrancyGuard, Ownable {
     // user address -> erc721 address -> array of token ids
     mapping(address => mapping(address => uint256[]))
         public s_accountsToNFTDeposits;
+    mapping(address => mapping(address => uint256))
+        public s_accountsToTotalNFTDeposits;
+
     // allowed projects
     address[] public s_allowedNFTs;
     uint256 public s_totalAllowedNFTs;
@@ -35,10 +39,14 @@ contract NFTLending is ReentrancyGuard, Ownable {
     // user address -> eth borrow
     mapping(address => uint256) public s_accountsToEthBorrow;
 
-    // user address -> loan ids
-    mapping(address => uint256[]) public s_accountsToLoanIds;
     // user address -> total loans
     mapping(address => uint256) public s_accountsToTotalLoans;
+
+    // loan id
+    uint256 public s_loanId = 0;
+
+    // user address -> loan ids
+    mapping(address => uint256[]) public s_accountsToLoanIds;
 
     // user address -> loan id -> deadline
     mapping(address => mapping(uint256 => uint256))
@@ -47,12 +55,12 @@ contract NFTLending is ReentrancyGuard, Ownable {
     // user address -> loan id -> eth borrow
     mapping(address => mapping(uint256 => uint256))
         public s_accountsToLoanIdToEthBorrow;
-    uint256 public s_loanId = 0;
 
     // borrowing
     uint256 public s_borrowInterestRate = 10;
     uint256 public s_borrowPower = 30;
     uint8 public immutable i_LIQUIDATION_THRESHOLD = 100;
+
     // represent delete
     uint256 private immutable i_ARRAY_DELETE_ID = 5373135;
 
@@ -71,7 +79,7 @@ contract NFTLending is ReentrancyGuard, Ownable {
     event NewFloor(address indexed nft, uint256 indexed amount);
     event BorrowEth(address indexed account, uint256 indexed amount);
     event HealthScore(address indexed account, uint256 indexed userScore);
-    event DeleteDeposit(uint256 indexed tokenId, uint256 indexed lengths);
+    event DeleteDeposit(uint256 indexed tokenId);
     event LoanRepayment(address indexed account, uint256 indexed amount);
 
     // price feed
@@ -124,6 +132,7 @@ contract NFTLending is ReentrancyGuard, Ownable {
         nonReentrant
     {
         s_accountsToNFTDeposits[msg.sender][nft].push(tokenId);
+        s_accountsToTotalNFTDeposits[msg.sender][nft]++;
         ERC721(nft).transferFrom(msg.sender, address(this), tokenId);
         emit Deposit(msg.sender, tokenId);
 
@@ -170,16 +179,10 @@ contract NFTLending is ReentrancyGuard, Ownable {
                     .length;
                 tokenIndex++
             ) {
-                if (
-                    s_accountsToNFTDeposits[user][s_allowedNFTs[projectIndex]][
-                        tokenIndex
-                    ] != i_ARRAY_DELETE_ID
-                ) {
-                    uint256 usdFloorValue = getNFTFloorUSDValue(
-                        s_allowedNFTs[projectIndex]
-                    );
-                    totalCollateral += usdFloorValue;
-                }
+                uint256 usdFloorValue = getNFTFloorUSDValue(
+                    s_allowedNFTs[projectIndex]
+                );
+                totalCollateral += usdFloorValue;
             }
         }
         return totalCollateral;
@@ -239,22 +242,28 @@ contract NFTLending is ReentrancyGuard, Ownable {
         if (s_accountsToNFTDeposits[msg.sender][nft].length < 1)
             revert NoDeposit(msg.sender, nft);
         bool deleted = false;
+        uint256 newLength = s_accountsToNFTDeposits[msg.sender][nft].length - 1;
+        uint256[] memory newTokenIds = new uint256[](newLength);
+        uint256 newIndex = 0;
         for (
             uint256 index = 0;
             index < s_accountsToNFTDeposits[msg.sender][nft].length;
             index++
         ) {
-            if (s_accountsToNFTDeposits[msg.sender][nft][index] == tokenId) {
-                s_accountsToNFTDeposits[msg.sender][nft][
-                    index
-                ] = i_ARRAY_DELETE_ID;
+            if (s_accountsToNFTDeposits[msg.sender][nft][index] != tokenId) {
+                newTokenIds[newIndex] = s_accountsToNFTDeposits[msg.sender][
+                    nft
+                ][index];
+                newIndex++;
+            } else {
                 emit DeleteDeposit(
-                    s_accountsToNFTDeposits[msg.sender][nft][index],
-                    s_accountsToNFTDeposits[msg.sender][nft].length
+                    s_accountsToNFTDeposits[msg.sender][nft][index]
                 );
                 deleted = true;
             }
         }
+        s_accountsToNFTDeposits[msg.sender][nft] = newTokenIds;
+        s_accountsToTotalNFTDeposits[msg.sender][nft]--;
         if (!deleted) revert TokenNotFound(tokenId);
 
         // check health score if withdrawn
@@ -275,8 +284,13 @@ contract NFTLending is ReentrancyGuard, Ownable {
         moreThanZero(msg.value)
         nonReentrant
     {
-        s_accountsToEthBorrow[msg.sender] -= msg.value;
+        if (msg.value > s_accountsToLoanIdToEthBorrow[msg.sender][loanId])
+            revert AmountMoreThanBorrowed(
+                s_accountsToLoanIdToEthBorrow[msg.sender][loanId],
+                msg.value
+            );
         s_accountsToLoanIdToEthBorrow[msg.sender][loanId] -= msg.value;
+        s_accountsToEthBorrow[msg.sender] -= msg.value;
         s_treasuryEth += msg.value;
         emit LoanRepayment(msg.sender, msg.value);
     }
